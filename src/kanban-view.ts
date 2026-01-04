@@ -20,6 +20,7 @@ import {
 	TagValue,
 	TFile,
 	ViewOption,
+	parsePropertyId,
 } from 'obsidian';
 import type BasesKanbanPlugin from './main';
 import { DragDropManager } from './drag-drop';
@@ -260,7 +261,13 @@ export class KanbanView extends BasesView {
 		
 		// Value
 		const valueEl = rowEl.createSpan({ cls: 'bases-kanban-property-value' });
-		valueEl.setText(this.formatValue(value));
+		const { type } = parsePropertyId(propId);
+		// use renderTo for formula values to get dynamic rendering
+		if (type === "formula") {
+			value.renderTo(valueEl, this.app.renderContext);
+		} else {
+			valueEl.setText(this.formatValue(value));
+		}
 	}
 
 	private getIconForValue(value: Value, propId: BasesPropertyId): string {
@@ -291,6 +298,8 @@ export class KanbanView extends BasesView {
 					return 'file';
 			}
 		}
+
+		if (propId.startsWith('formula.')) return 'square-function';
 
 		// Check value type
 		if (value instanceof DateValue) return 'calendar';
