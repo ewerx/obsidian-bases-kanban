@@ -361,7 +361,12 @@ export class DragDropManager {
 			// Handle "(No value)" column
 			const newValue = targetColumnName === '(No value)' ? '' : targetColumnName;
 			await this.callbacks.onCardMoveToColumn(entry.file, newValue);
-		} 
+
+			// Also update sort property so the card lands at the correct position
+			if (sortProperty) {
+				await this.callbacks.onCardReorder(entry.file, targetColumnName, targetIndex);
+			}
+		}
 		// Reordering within same column - update sort property if configured
 		else if (sortProperty && sourceIndex !== targetIndex) {
 			// Adjust target index if dragging down (source card will be removed first)

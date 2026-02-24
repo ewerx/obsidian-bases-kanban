@@ -38,6 +38,7 @@ export class KanbanView extends BasesView {
 	private groupByProperty: string | null = null;
 	private dragDropManager: DragDropManager;
 	private currentGroups: BasesEntryGroup[] = [];
+	private currentColumnNames: string[] = [];
 
 	constructor(controller: QueryController, scrollEl: HTMLElement, plugin: BasesKanbanPlugin) {
 		super(controller);
@@ -99,15 +100,31 @@ export class KanbanView extends BasesView {
 		const sortedGroups = this.sortGroupsByColumnOrder(groupedData);
 		this.currentGroups = sortedGroups;
 
+		// Build map of column name -> group for quick lookup
+		const groupByName = new Map<string, BasesEntryGroup>();
+		for (const group of sortedGroups) {
+			groupByName.set(this.getColumnName(group.key), group);
+		}
+
+		// Merge saved column order with current groups to include empty columns
+		const savedColumnOrder = this.getColumnOrderFromConfig();
+		const allColumnNames = this.mergeColumnOrder(savedColumnOrder, sortedGroups);
+		this.currentColumnNames = allColumnNames;
+
 		// Render the kanban board
 		const boardEl = this.containerEl.createDiv({ cls: 'bases-kanban-board' });
 
 		// Initialize drag & drop for this board
 		this.dragDropManager.initBoard(boardEl);
 
-		// Render columns with their index for drag & drop
-		sortedGroups.forEach((group, columnIndex) => {
-			this.renderColumn(boardEl, group, columnIndex);
+		// Render columns (including empty ones from saved order)
+		allColumnNames.forEach((columnName, columnIndex) => {
+			const group = groupByName.get(columnName);
+			if (group) {
+				this.renderColumn(boardEl, group, columnIndex);
+			} else {
+				this.renderEmptyColumn(boardEl, columnName, columnIndex);
+			}
 		});
 
 		// Add the "Add Column" button at the end
@@ -199,6 +216,75 @@ export class KanbanView extends BasesView {
 		addBtn.addEventListener('click', () => {
 			this.handleAddColumn();
 		});
+	}
+
+	/**
+	 * Render an empty column for a saved column that currently has no cards.
+	 */
+	private renderEmptyColumn(boardEl: HTMLElement, columnName: string, columnIndex: number): void {
+		const columnEl = boardEl.createDiv({ cls: 'bases-kanban-column' });
+
+		columnEl.dataset.columnName = columnName;
+		columnEl.dataset.columnIndex = String(columnIndex);
+
+		// Column header
+		const headerEl = columnEl.createDiv({ cls: 'bases-kanban-column-header' });
+
+		const dragHandleEl = headerEl.createDiv({ cls: 'bases-kanban-drag-handle' });
+		setIcon(dragHandleEl, 'grip-vertical');
+
+		const headerLeftEl = headerEl.createDiv({ cls: 'bases-kanban-header-left' });
+		headerLeftEl.createEl('h3', { text: columnName });
+
+		headerLeftEl.createEl('span', {
+			text: '0',
+			cls: 'bases-kanban-column-count'
+		});
+
+		const headerRightEl = headerEl.createDiv({ cls: 'bases-kanban-header-actions' });
+
+		const addCardBtn = headerRightEl.createEl('button', {
+			cls: 'bases-kanban-add-card-btn clickable-icon',
+			attr: { 'aria-label': 'Add card' }
+		});
+		setIcon(addCardBtn, 'plus');
+		addCardBtn.addEventListener('click', (evt) => {
+			evt.stopPropagation();
+			this.handleAddCard(columnName);
+		});
+
+		// Make column draggable
+		this.dragDropManager.makeColumnDraggable(columnEl, columnName, columnIndex);
+
+		// Cards container (empty but still a drop zone)
+		const cardsEl = columnEl.createDiv({ cls: 'bases-kanban-cards' });
+		this.dragDropManager.setupCardsDropZone(cardsEl, columnName);
+	}
+
+	/**
+	 * Merge saved column order with current groups to produce a full list of column names,
+	 * including empty columns that exist in saved order but have no current entries.
+	 */
+	private mergeColumnOrder(savedOrder: string[], groups: BasesEntryGroup[]): string[] {
+		const existingNames = groups.map(g => this.getColumnName(g.key));
+		const existingSet = new Set(existingNames);
+
+		if (savedOrder.length === 0) {
+			return existingNames;
+		}
+
+		// Start with saved order (preserves empty columns)
+		// Exclude "(No value)" from being synthesized as empty — it only appears when files lack the property
+		const result = savedOrder.filter(name => existingSet.has(name) || name !== NO_VALUE_COLUMN);
+
+		// Append any new groups not yet in saved order
+		for (const name of existingNames) {
+			if (!result.includes(name)) {
+				result.push(name);
+			}
+		}
+
+		return result;
 	}
 
 	private getColumnName(key: Value | undefined): string {
@@ -440,28 +526,30 @@ export class KanbanView extends BasesView {
 
 		// Find the column's entries
 		const group = this.currentGroups.find(g => this.getColumnName(g.key) === columnName);
-		if (!group) {
-			return;
-		}
-
-		// Build new order: remove the moved card, insert at target position
-		const movedEntry = group.entries.find(e => e.file.path === file.path);
-		if (!movedEntry) {
-			return;
-		}
-
-		const otherEntries = group.entries.filter(e => e.file.path !== file.path);
-		const newOrder: BasesEntry[] = [
-			...otherEntries.slice(0, targetIndex),
-			movedEntry,
-			...otherEntries.slice(targetIndex)
-		];
-
-		// Get sort direction from Bases config
+		const existingEntries = group?.entries ?? [];
 		const isDescending = this.getSortDirection() === 'DESC';
 
-		// Renumber all cards with clean integers
-		await this.renumberCardsInOrder(newOrder, sortProperty, isDescending);
+		const isInGroup = existingEntries.some(e => e.file.path === file.path);
+
+		if (isInGroup) {
+			// Same-column reorder: remove and reinsert
+			const movedEntry = existingEntries.find(e => e.file.path === file.path)!;
+			const otherEntries = existingEntries.filter(e => e.file.path !== file.path);
+			const newOrder: BasesEntry[] = [
+				...otherEntries.slice(0, targetIndex),
+				movedEntry,
+				...otherEntries.slice(targetIndex)
+			];
+			await this.renumberCardsInOrder(newOrder, sortProperty, isDescending);
+		} else {
+			// Cross-column move: insert the file among existing entries and renumber all
+			const files: TFile[] = [
+				...existingEntries.slice(0, targetIndex).map(e => e.file),
+				file,
+				...existingEntries.slice(targetIndex).map(e => e.file),
+			];
+			await this.renumberFilesInOrder(files, sortProperty, isDescending);
+		}
 	}
 
 	/**
@@ -503,10 +591,32 @@ export class KanbanView extends BasesView {
 	}
 
 	/**
+	 * Assign clean integer values to files in the given order.
+	 * Used for cross-column moves where we only have TFile references.
+	 */
+	private async renumberFilesInOrder(
+		files: TFile[],
+		sortProperty: string,
+		isDescending: boolean
+	): Promise<void> {
+		const count = files.length;
+
+		const updates = files.map((file, index) => {
+			const newValue = isDescending ? (count - index) : (index + 1);
+
+			return this.app.fileManager.processFrontMatter(file, (fm) => {
+				fm[sortProperty] = newValue;
+			});
+		});
+
+		await Promise.all(updates);
+	}
+
+	/**
 	 * Get current column names in display order
 	 */
 	private getCurrentColumnNames(): string[] {
-		return this.currentGroups.map(group => this.getColumnName(group.key));
+		return this.currentColumnNames;
 	}
 
 	/**
