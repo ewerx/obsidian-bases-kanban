@@ -95,8 +95,9 @@ export class KanbanView extends BasesView {
 		// Detect the groupBy property from the data (uses Bases groupBy configuration)
 		this.groupByProperty = this.detectGroupByProperty(groupedData);
 
-		// Sort groups by saved column order
-		const sortedGroups = this.sortGroupsByColumnOrder(groupedData);
+		// Include empty columns saved in column order, then sort by saved order
+		const groupsWithEmptyColumns = this.mergeWithEmptyColumnsFromOrder(groupedData);
+		const sortedGroups = this.sortGroupsByColumnOrder(groupsWithEmptyColumns);
 		this.currentGroups = sortedGroups;
 
 		// Render the kanban board
@@ -362,8 +363,14 @@ export class KanbanView extends BasesView {
 		}
 
 		const modal = new AddColumnModal(this.app, this.data?.data ?? [], (columnValue, selectedFiles) => {
-			if (!columnValue || selectedFiles.length === 0) return;
-			void this.addColumnToFiles(groupByProperty, columnValue, selectedFiles);
+			if (!columnValue) return;
+
+			this.ensureColumnInOrder(columnValue);
+			this.render();
+
+			if (selectedFiles.length > 0) {
+				void this.addColumnToFiles(groupByProperty, columnValue, selectedFiles);
+			}
 		});
 		modal.open();
 	}
@@ -605,6 +612,49 @@ export class KanbanView extends BasesView {
 	}
 
 	/**
+	 * Ensure a column name exists in persisted column order.
+	 */
+	private ensureColumnInOrder(columnName: string): void {
+		if (!columnName || columnName === NO_VALUE_COLUMN) {
+			return;
+		}
+
+		const columnOrder = this.getColumnOrderFromConfig();
+		if (columnOrder.includes(columnName)) {
+			return;
+		}
+
+		this.updateColumnOrder([...columnOrder, columnName]);
+	}
+
+	/**
+	 * Add synthetic empty groups for columns that exist in saved order but have no cards.
+	 */
+	private mergeWithEmptyColumnsFromOrder(groups: BasesEntryGroup[]): BasesEntryGroup[] {
+		const columnOrder = this.getColumnOrderFromConfig();
+		if (columnOrder.length === 0) {
+			return groups;
+		}
+
+		const existingNames = new Set(groups.map(group => this.getColumnName(group.key)));
+		const emptyGroups: BasesEntryGroup[] = [];
+
+		for (const columnName of columnOrder) {
+			if (!columnName || columnName === NO_VALUE_COLUMN || existingNames.has(columnName)) {
+				continue;
+			}
+
+			emptyGroups.push({
+				key: { toString: () => columnName } as Value,
+				entries: [],
+				hasKey: () => true,
+			} as BasesEntryGroup);
+		}
+
+		return [...groups, ...emptyGroups];
+	}
+
+	/**
 	 * Sort groups based on saved column order
 	 */
 	private sortGroupsByColumnOrder(groups: BasesEntryGroup[]): BasesEntryGroup[] {
@@ -786,17 +836,15 @@ class AddColumnModal extends Modal {
 			.addButton(btn => btn
 				.setButtonText('Create column')
 				.setCta()
-				.onClick(() => {
-					const value = this.columnValueInput.value.trim();
-					if (value && this.selectedFiles.size > 0) {
-						this.onSubmit(value, Array.from(this.selectedFiles));
-						this.close();
-					} else if (!value) {
-						new Notice('Please enter a column name');
-					} else {
-						new Notice('Please select at least one file');
-					}
-				}))
+					.onClick(() => {
+						const value = this.columnValueInput.value.trim();
+						if (value) {
+							this.onSubmit(value, Array.from(this.selectedFiles));
+							this.close();
+						} else if (!value) {
+							new Notice('Please enter a column name');
+						}
+					}))
 			.addButton(btn => btn
 				.setButtonText('Cancel')
 				.onClick(() => this.close()));
