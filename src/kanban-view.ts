@@ -260,7 +260,31 @@ export class KanbanView extends BasesView {
 		
 		// Value
 		const valueEl = rowEl.createSpan({ cls: 'bases-kanban-property-value' });
-		valueEl.setText(this.formatValue(value));
+		const text = this.formatValue(value);
+		const urlMatch = text.match(/^https?:\/\/\S+$/);
+		if (urlMatch) {
+			const a = valueEl.createEl('a', {
+				href: text,
+				text: this.shortenUrl(text),
+				cls: 'external-link',
+			});
+			a.setAttr('target', '_blank');
+			a.setAttr('rel', 'noopener');
+			a.addEventListener('click', (evt) => evt.stopPropagation());
+		} else {
+			valueEl.setText(text);
+		}
+	}
+
+	private shortenUrl(url: string): string {
+		try {
+			const u = new URL(url);
+			const segments = u.pathname.split('/').filter(Boolean);
+			const last = segments[segments.length - 1];
+			return last ? `${u.hostname}/${last}` : u.hostname;
+		} catch {
+			return url;
+		}
 	}
 
 	private getIconForValue(value: Value, propId: BasesPropertyId): string {
